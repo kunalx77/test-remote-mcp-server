@@ -1,45 +1,57 @@
 import sqlite3
 from pathlib import Path
+
 from fastmcp import FastMCP
 
-# ---------------------------------------------------------
-# FastMCP Server
-# ---------------------------------------------------------
+# =========================================================
+# FastMCP SERVER
+# =========================================================
 
 mcp = FastMCP("Expense Tracker")
 
 
-# ---------------------------------------------------------
-# Database Configuration
-# ---------------------------------------------------------
+# =========================================================
+# DATABASE CONFIGURATION
+# =========================================================
 
-# Project root:
+# Project structure:
+#
 # fastmcp remote/
+# ├── data/
+# │   └── expenses.db
 # ├── src/
 # │   └── fastmcp_remote/
 # │       └── server.py
-# └── data/
-#     └── expenses.db
+# ├── pyproject.toml
+# └── .venv/
+#
+# server.py is:
+# project/src/fastmcp_remote/server.py
+#
+# parents[0] = fastmcp_remote
+# parents[1] = src
+# parents[2] = project root
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+
 DATA_DIR = PROJECT_DIR / "data"
 
-# Create the data directory if it doesn't exist
+# Make sure the data directory exists
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_NAME = DATA_DIR / "expenses.db"
 
 
-# ---------------------------------------------------------
-# Database Connection
-# ---------------------------------------------------------
+# =========================================================
+# DATABASE CONNECTION
+# =========================================================
 
 
 def get_db_connection():
-    """Create and return a SQLite database connection."""
+    """Create a SQLite database connection."""
 
     conn = sqlite3.connect(
-        DB_NAME,
+        str(DB_NAME),
         timeout=10,
     )
 
@@ -48,9 +60,9 @@ def get_db_connection():
     return conn
 
 
-# ---------------------------------------------------------
-# Database Initialization
-# ---------------------------------------------------------
+# =========================================================
+# DATABASE INITIALIZATION
+# =========================================================
 
 
 def init_db():
@@ -75,13 +87,13 @@ def init_db():
         conn.close()
 
 
-# Initialize database when server starts
+# Initialize database when the server starts
 init_db()
 
 
-# ---------------------------------------------------------
-# Add Expense
-# ---------------------------------------------------------
+# =========================================================
+# ADD EXPENSE
+# =========================================================
 
 
 @mcp.tool
@@ -90,7 +102,7 @@ def add_expense(
     amount: float,
     category: str,
 ) -> str:
-    """Add a new expense."""
+    """Add a new expense to the expense tracker."""
 
     if amount <= 0:
         return "Error: amount must be greater than 0."
@@ -128,9 +140,9 @@ def add_expense(
         conn.close()
 
 
-# ---------------------------------------------------------
-# List Expenses
-# ---------------------------------------------------------
+# =========================================================
+# LIST EXPENSES
+# =========================================================
 
 
 @mcp.tool
@@ -157,9 +169,9 @@ def list_expenses() -> list[dict]:
         conn.close()
 
 
-# ---------------------------------------------------------
-# Summarize Expenses
-# ---------------------------------------------------------
+# =========================================================
+# SUMMARIZE EXPENSES
+# =========================================================
 
 
 @mcp.tool
@@ -169,13 +181,19 @@ def summarize_expenses() -> dict:
     conn = get_db_connection()
 
     try:
-        # Total expenses
+        # Total amount
         total_row = conn.execute("""
             SELECT COALESCE(SUM(amount), 0) AS total
             FROM expenses
             """).fetchone()
 
-        # Expenses grouped by category
+        # Number of expenses
+        count_row = conn.execute("""
+            SELECT COUNT(*) AS count
+            FROM expenses
+            """).fetchone()
+
+        # Group by category
         category_rows = conn.execute("""
             SELECT
                 category,
@@ -184,12 +202,6 @@ def summarize_expenses() -> dict:
             GROUP BY category
             ORDER BY total DESC
             """).fetchall()
-
-        # Number of expenses
-        count_row = conn.execute("""
-            SELECT COUNT(*) AS count
-            FROM expenses
-            """).fetchone()
 
         return {
             "total_expenses": round(
@@ -210,9 +222,9 @@ def summarize_expenses() -> dict:
         conn.close()
 
 
-# ---------------------------------------------------------
-# Delete Expense
-# ---------------------------------------------------------
+# =========================================================
+# DELETE EXPENSE
+# =========================================================
 
 
 @mcp.tool
@@ -243,9 +255,67 @@ def delete_expense(expense_id: int) -> str:
         conn.close()
 
 
-# ---------------------------------------------------------
-# Start MCP Server
-# ---------------------------------------------------------
+# =========================================================
+# DATABASE DIAGNOSTIC
+# =========================================================
+
+
+@mcp.tool
+def database_status() -> dict:
+    """
+    Check the database path and verify that the database is writable.
+    Useful for diagnosing remote MCP connector issues.
+    """
+
+    conn = None
+
+    try:
+        conn = get_db_connection()
+
+        # Test SQLite write access inside a temporary table
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS _write_test (
+                id INTEGER
+            )
+            """)
+
+        conn.execute("""
+            INSERT INTO _write_test (id)
+            VALUES (1)
+            """)
+
+        conn.execute("""
+            DELETE FROM _write_test
+            """)
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "database_path": str(DB_NAME),
+            "database_exists": DB_NAME.exists(),
+            "database_writable": True,
+            "data_directory": str(DATA_DIR),
+            "data_directory_exists": DATA_DIR.exists(),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "database_path": str(DB_NAME),
+            "database_exists": DB_NAME.exists(),
+            "database_writable": False,
+            "error": str(e),
+        }
+
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+# =========================================================
+# START SERVER
+# =========================================================
 
 if __name__ == "__main__":
     mcp.run(
