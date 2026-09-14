@@ -1,10 +1,11 @@
+import os
 import sqlite3
 from pathlib import Path
 
 from fastmcp import FastMCP
 
 # =========================================================
-# FastMCP SERVER
+# FASTMCP SERVER
 # =========================================================
 
 mcp = FastMCP("Expense Tracker")
@@ -14,32 +15,37 @@ mcp = FastMCP("Expense Tracker")
 # DATABASE CONFIGURATION
 # =========================================================
 
-# Project structure:
+# Priority:
 #
-# fastmcp remote/
-# ├── data/
-# │   └── expenses.db
-# ├── src/
-# │   └── fastmcp_remote/
-# │       └── server.py
-# ├── pyproject.toml
-# └── .venv/
+# 1. EXPENSE_DB_DIR environment variable
+# 2. /tmp/expense_tracker for remote/container environments
 #
-# server.py is:
-# project/src/fastmcp_remote/server.py
+# Using /tmp avoids the read-only /app/data problem that
+# you're currently seeing in the remote connector.
 #
-# parents[0] = fastmcp_remote
-# parents[1] = src
-# parents[2] = project root
+# IMPORTANT:
+# /tmp is NOT persistent storage. The database can disappear
+# when the container restarts.
+#
+# For production, set EXPENSE_DB_DIR to a persistent volume
+# or use PostgreSQL.
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
 
-DATA_DIR = PROJECT_DIR / "data"
+DEFAULT_DB_DIR = Path("/tmp/expense_tracker")
 
-# Make sure the data directory exists
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_DIR = Path(
+    os.environ.get(
+        "EXPENSE_DB_DIR",
+        str(DEFAULT_DB_DIR),
+    )
+)
 
-DB_NAME = DATA_DIR / "expenses.db"
+DB_DIR.mkdir(
+    parents=True,
+    exist_ok=True,
+)
+
+DB_NAME = DB_DIR / "expenses.db"
 
 
 # =========================================================
@@ -48,7 +54,7 @@ DB_NAME = DATA_DIR / "expenses.db"
 
 
 def get_db_connection():
-    """Create a SQLite database connection."""
+    """Create and return a SQLite database connection."""
 
     conn = sqlite3.connect(
         str(DB_NAME),
@@ -181,19 +187,16 @@ def summarize_expenses() -> dict:
     conn = get_db_connection()
 
     try:
-        # Total amount
         total_row = conn.execute("""
             SELECT COALESCE(SUM(amount), 0) AS total
             FROM expenses
             """).fetchone()
 
-        # Number of expenses
         count_row = conn.execute("""
             SELECT COUNT(*) AS count
             FROM expenses
             """).fetchone()
 
-        # Group by category
         category_rows = conn.execute("""
             SELECT
                 category,
@@ -263,16 +266,28 @@ def delete_expense(expense_id: int) -> str:
 @mcp.tool
 def database_status() -> dict:
     """
-    Check the database path and verify that the database is writable.
-    Useful for diagnosing remote MCP connector issues.
+    Check database location and verify that SQLite can write.
     """
 
     conn = None
 
     try:
+        # -------------------------------------------------
+        # Test directory-level write access
+        # -------------------------------------------------
+
+        test_file = DB_DIR / ".write_test"
+
+        test_file.write_text("write test")
+
+        test_file.unlink()
+
+        # -------------------------------------------------
+        # Test SQLite write access
+        # -------------------------------------------------
+
         conn = get_db_connection()
 
-        # Test SQLite write access inside a temporary table
         conn.execute("""
             CREATE TABLE IF NOT EXISTS _write_test (
                 id INTEGER
@@ -295,8 +310,11 @@ def database_status() -> dict:
             "database_path": str(DB_NAME),
             "database_exists": DB_NAME.exists(),
             "database_writable": True,
-            "data_directory": str(DATA_DIR),
-            "data_directory_exists": DATA_DIR.exists(),
+            "database_directory": str(DB_DIR),
+            "database_directory_exists": DB_DIR.exists(),
+            "database_directory_writable": True,
+            "process_working_directory": str(Path.cwd()),
+            "environment_db_dir": os.environ.get("EXPENSE_DB_DIR"),
         }
 
     except Exception as e:
@@ -305,6 +323,9 @@ def database_status() -> dict:
             "database_path": str(DB_NAME),
             "database_exists": DB_NAME.exists(),
             "database_writable": False,
+            "database_directory": str(DB_DIR),
+            "database_directory_exists": DB_DIR.exists(),
+            "error_type": type(e).__name__,
             "error": str(e),
         }
 
@@ -316,6 +337,7 @@ def database_status() -> dict:
 # =========================================================
 # START SERVER
 # =========================================================
+
 
 if __name__ == "__main__":
     mcp.run(
